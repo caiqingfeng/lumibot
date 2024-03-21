@@ -3,7 +3,6 @@ import logging
 import re
 
 import pandas as pd
-
 from lumibot import LUMIBOT_DEFAULT_PYTZ as DEFAULT_PYTZ
 from lumibot.tools.helpers import parse_timestep_qty_and_unit, to_datetime_aware
 
@@ -269,6 +268,11 @@ class Data:
             )
         return df
 
+    # ./lumibot/build/__editable__.lumibot-3.1.14-py3-none-any/lumibot/entities/data.py:280: 
+    # FutureWarning: Downcasting object dtype arrays on .fillna, .ffill, .bfill is deprecated and will change in a future version. 
+    # Call result.infer_objects(copy=False) instead.
+    # To opt-in to the future behavior, set `pd.set_option('future.no_silent_downcasting', True)`
+
     def repair_times_and_fill(self, idx):
         # Trim the global index so that it is within the local data.
         idx = idx[(idx >= self.datetime_start) & (idx <= self.datetime_end)]
@@ -513,14 +517,14 @@ class Data:
             data = self._get_bars_dict(dt, length=length, timestep="minute", timeshift=timeshift)
 
         else:
-            unit = "T"  # Guarenteed to be minute timestep at this point
+            unit = "min"  # Guaranteed to be minute timestep at this point
             length = length * quantity
             data = self._get_bars_dict(dt, length=length, timestep=timestep, timeshift=timeshift)
 
         if data is None:
             return None
 
-        df = pd.DataFrame(data).set_index("datetime")
+        df = pd.DataFrame(data).assign(datetime=lambda df: pd.to_datetime(df['datetime'])).set_index('datetime')
         df_result = df.resample(f"{quantity}{unit}").agg(agg_column_map)
 
         # Drop any rows that have NaN values (this can happen if the data is not complete, eg. weekends)

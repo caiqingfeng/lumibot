@@ -8,8 +8,6 @@ from decimal import Decimal
 
 import pandas_market_calendars as mcal
 from alpaca.trading.client import TradingClient
-from alpaca.trading.enums import QueryOrderStatus
-from alpaca.trading.requests import GetOrdersRequest
 from alpaca.trading.stream import TradingStream
 from dateutil import tz
 from termcolor import colored
@@ -304,8 +302,22 @@ class Alpaca(Broker):
         return result
 
     def _pull_position(self, strategy, asset):
-        """Get the account position for a given asset.
-        return a position object"""
+        """
+        Pull a single position from the broker that matches the asset and strategy. If no position is found, None is
+        returned.
+
+        Parameters
+        ----------
+        strategy: Strategy
+            The strategy object that placed the order to pull
+        asset: Asset
+            The asset to pull the position for
+
+        Returns
+        -------
+        Position
+            The position object for the asset and strategy if found, otherwise None
+        """
         response = self._pull_broker_position(asset)
         result = self._parse_broker_position(response, strategy)
         return result
@@ -352,17 +364,9 @@ class Alpaca(Broker):
         response = self.api.get_order(identifier)
         return response
 
-    def _pull_broker_open_orders(self):
-        """Get the broker open orders"""
-        # params to filter orders by
-        request_params = GetOrdersRequest(
-            status=QueryOrderStatus.OPEN,
-        )
-
-        # orders that satisfy params
-        orders = self.api.get_orders(filter=request_params)
-
-        return orders
+    def _pull_broker_all_orders(self):
+        """Get the broker orders"""
+        return self.api.get_orders()
 
     def _flatten_order(self, order):
         """Some submitted orders may trigger other orders.

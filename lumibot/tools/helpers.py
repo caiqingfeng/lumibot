@@ -1,18 +1,19 @@
 import os
 import re
 import sys
-from datetime import datetime, timedelta
+import datetime as dt
 
 import pandas_market_calendars as mcal
 from termcolor import colored
 
 from lumibot import LUMIBOT_DEFAULT_PYTZ
+import pandas as pd
 
 
 def get_chunks(l, chunk_size):
     chunks = []
     for i in range(0, len(l), chunk_size):
-        chunks.append(l[i : i + chunk_size])
+        chunks.append(l[i: i + chunk_size])
     return chunks
 
 
@@ -37,11 +38,24 @@ def deduplicate_sequence(seq, key=""):
 
 def get_trading_days(market="NYSE", start_date="1950-01-01", end_date=None):
     format_datetime = lambda dt: dt.to_pydatetime().astimezone(LUMIBOT_DEFAULT_PYTZ)
-    today = get_lumibot_datetime().date()
-    nyse = mcal.get_calendar(market)
-    days = nyse.schedule(start_date=start_date, end_date=end_date or today)
-    days.market_open = days.market_open.apply(format_datetime)
-    days.market_close = days.market_close.apply(format_datetime)
+    start_date = to_datetime_aware(pd.to_datetime(start_date))
+    today = get_lumibot_datetime()
+    # macl's "24/7" calendar doesn't return consecutive days, so need to be generated manually.
+    if market == "24/7":
+        market_open = pd.date_range(
+            start=start_date, end=end_date or today).to_frame(index=False,name="market_open")
+        market_close = pd.date_range(
+            start=start_date.replace(hour=23,minute=59,second=59,microsecond=999999), 
+            end=end_date or today.replace(hour=23,minute=59,second=59,microsecond=999999)).to_frame(index=False,name="market_close")
+        index = pd.date_range(
+            start=start_date.replace(tzinfo=None), end=end_date or today.replace(tzinfo=None))
+        days = pd.concat([market_open, market_close], axis=1)
+        days.index = index
+    else:
+        nyse = mcal.get_calendar(market)
+        days = nyse.schedule(start_date=start_date, end_date=end_date or today)
+        days.market_open = days.market_open.apply(format_datetime)
+        days.market_close = days.market_close.apply(format_datetime)
     return days
 
 
@@ -87,7 +101,7 @@ def print_progress_bar(
     percent_str = ("  {:.%df}" % decimals).format(percent)
     percent_str = percent_str[-decimals - 4 :]
 
-    now = datetime.now()
+    now = dt.datetime.now()
     elapsed = now - backtesting_started
 
     if percent > 0:
@@ -121,17 +135,20 @@ def print_progress_bar(
 
 
 def get_lumibot_datetime():
-    return datetime.now().astimezone(LUMIBOT_DEFAULT_PYTZ)
+    return dt.datetime.now().astimezone(LUMIBOT_DEFAULT_PYTZ)
 
 
-def to_datetime_aware(dt):
+def to_datetime_aware(dt_in):
     """Convert naive time to datetime aware on default timezone."""
-    if not dt:
-        return dt
-    elif isinstance(dt, datetime) and (dt.tzinfo is None or dt.tzinfo.utcoffset(dt) is None):
-        return LUMIBOT_DEFAULT_PYTZ.localize(dt)
+    if not dt_in:
+        return dt_in
+    elif isinstance(dt_in, dt.datetime) and (dt_in.tzinfo is None):
+        return LUMIBOT_DEFAULT_PYTZ.localize(dt_in)
+    elif isinstance(dt_in, dt.datetime) and (dt_in.tzinfo.utcoffset(dt_in) is None):
+        # TODO: This will fail because an exception is thrown if tzinfo is not None.
+        return LUMIBOT_DEFAULT_PYTZ.localize(dt_in)
     else:
-        return dt
+        return dt_in
 
 
 def parse_symbol(symbol):
@@ -140,6 +157,7 @@ def parse_symbol(symbol):
     For options, extract and return the stock symbol, expiration date (as a datetime.date object),
     type (call or put), and strike price.
     For stocks, simply return the stock symbol.
+    TODO: Crypto and Forex support
     """
     # Pattern to match the option symbol format
     option_pattern = r"([A-Z]+)(\d{6})([CP])(\d+)"
@@ -147,14 +165,14 @@ def parse_symbol(symbol):
     match = re.match(option_pattern, symbol)
     if match:
         stock_symbol, expiration, option_type, strike_price = match.groups()
-        expiration_date = datetime.strptime(expiration, "%y%m%d").date()
+        expiration_date = dt.datetime.strptime(expiration, "%y%m%d").date()
         option_type = "CALL" if option_type == "C" else "PUT"
         return {
             "type": "option",
             "stock_symbol": stock_symbol,
             "expiration_date": expiration_date,
             "option_type": option_type,
-            "strike_price": float(strike_price) / 1000,  # assuming strike price is in thousandths
+            "strike_price": round(float(strike_price) / 1000, 3),  # assuming strike price is in thousandths
         }
     else:
         return {"type": "stock", "stock_symbol": symbol}
@@ -168,7 +186,7 @@ def create_options_symbol(stock_symbol, expiration_date, option_type, strike_pri
     ----------
     stock_symbol : str
         The stock symbol, e.g., 'AAPL'.
-    expiration_date : datetime.date
+    expiration_date : dt.date or dt.datetime
         The expiration date of the option.
     option_type : str
         The type of the option, either 'Call' or 'Put'.
@@ -181,6 +199,8 @@ def create_options_symbol(stock_symbol, expiration_date, option_type, strike_pri
         The formatted option symbol.
     """
     # Format the expiration date
+    if isinstance(expiration_date, str):
+        expiration_date = dt.datetime.strptime(expiration_date, "%Y-%m-%d").date()
     expiration_str = expiration_date.strftime("%y%m%d")
 
     # Determine the option type character

@@ -1,10 +1,11 @@
+import logging
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 
 from lumibot import LUMIBOT_DEFAULT_PYTZ, LUMIBOT_DEFAULT_TIMEZONE
 from lumibot.entities import Asset, AssetsMapping
-from lumibot.tools import black_scholes, get_chunks
+from lumibot.tools import black_scholes
 
 from .exceptions import UnavailabeTimestep
 
@@ -17,12 +18,50 @@ class DataSource(ABC):
     DEFAULT_TIMEZONE = LUMIBOT_DEFAULT_TIMEZONE
     DEFAULT_PYTZ = LUMIBOT_DEFAULT_PYTZ
 
-    def __init__(self, api_key=None):
+    def __init__(self, api_key=None, delay=None):
+        """
+
+        Parameters
+        ----------
+        api_key : str
+            The API key to use for the data source
+        delay : int
+            The number of minutes to delay the data by. This is useful for paper trading data sources that
+            provide delayed data (i.e. 15m delayed data).
+        """
         self.name = "data_source"
         self._timestep = None
         self._api_key = api_key
+        self._delay = timedelta(minutes=delay) if delay else None
 
     # ========Required Implementations ======================
+    @abstractmethod
+    def get_chains(self, asset: Asset, quote: Asset = None) -> dict:
+        """
+        Obtains option chain information for the asset (stock) from each
+        of the exchanges the options trade on and returns a dictionary
+        for each exchange.
+
+        Parameters
+        ----------
+        asset : Asset
+            The asset to get the option chains for
+        quote : Asset | None
+            The quote asset to get the option chains for
+
+        Returns
+        -------
+        dictionary of dictionary
+            Format:
+            - `Multiplier` (str) eg: `100`
+            - 'Chains' - paired Expiration/Strike info to guarentee that the strikes are valid for the specific
+                         expiration date.
+                         Format:
+                           chains['Chains']['CALL'][exp_date] = [strike1, strike2, ...]
+                         Expiration Date Format: 2023-07-31
+        """
+        pass
+
     @abstractmethod
     def get_historical_prices(
         self, asset, length, timestep="", timeshift=None, quote=None, exchange=None, include_after_hours=True
@@ -81,7 +120,10 @@ class DataSource(ABC):
         -------
         datetime
         """
-        return self.to_default_timezone(datetime.now())
+        current_time = self.to_default_timezone(datetime.now())
+        if self._delay:
+            current_time -= self._delay
+        return current_time
 
     def get_timestamp(self):
         """
@@ -302,6 +344,16 @@ class DataSource(ABC):
         else:
             return AssetsMapping(result)
 
+    def get_strikes(self, asset) -> list:
+        """Return a set of strikes for a given asset"""
+        chains = self.get_chains(asset)
+        strikes = set()
+        for right in chains["Chains"]:
+            for exp_date, strikes in chains["Chains"][right].items():
+                strikes |= set(strikes)
+
+        return sorted(strikes)
+
     def get_yesterday_dividend(self, asset, quote=None):
         """Return dividend per share for a given
         asset for the day before"""
@@ -319,7 +371,7 @@ class DataSource(ABC):
 
         return AssetsMapping(result)
 
-    def get_greeks(
+    def calculate_greeks(
         self,
         asset,
         # API Querying for prices and rates are expensive, so we'll pass them in as arguments most of the time
@@ -331,14 +383,22 @@ class DataSource(ABC):
         opt_price = asset_price
         und_price = underlying_price
         interest = risk_free_rate * 100
-        current_date = self.get_datetime().date()
+        current_date = self.get_datetime()
 
         # If asset expiration is a datetime object, convert it to date
         expiration = asset.expiration
         if isinstance(expiration, datetime):
             expiration = expiration.date()
 
-        days_to_expiration = (expiration - current_date).days
+        # Convert the expiration to be a datetime with 4pm New York time
+        expiration = datetime.combine(expiration, datetime.min.time())
+        expiration = self.DEFAULT_PYTZ.localize(expiration)
+        expiration = expiration.astimezone(self.DEFAULT_PYTZ)
+        expiration = expiration.replace(hour=16, minute=0, second=0, microsecond=0)
+
+        # Calculate the days to expiration, but allow for fractional days
+        days_to_expiration = (expiration - current_date).total_seconds() / (60 * 60 * 24)
+
         if asset.right.upper() == "CALL":
             is_call = True
             iv = black_scholes.BS(
@@ -371,3 +431,9 @@ class DataSource(ABC):
         )
 
         return greeks
+
+    def query_greeks(self, asset):
+        """Query for the Greeks as it can be more accurate than calculating locally."""
+        logging.info(f"Querying Options Greeks for {asset.symbol} is not supported for this "
+                     f"data source {self.__class__}.")
+        return {}

@@ -133,6 +133,15 @@ class AlpacaData(DataSource):
         else:
             self.version = "v2"
 
+    def get_chains(self, asset: Asset, quote=None, exchange: str = None):
+        """
+        Alpaca doesn't support option trading. This method is here to comply with the DataSource interface
+        """
+        raise NotImplementedError(
+            "Lumibot AlpacaData does not support get_chains() options data. If you need this "
+            "feature, please use a different data source."
+        )
+
     def get_last_price(self, asset, quote=None, exchange=None, **kwargs):
         if quote is not None:
             # If the quote is not None, we use it even if the asset is a tuple
@@ -236,6 +245,9 @@ class AlpacaData(DataSource):
 
             elif str(freq) == "1Day":
                 loop_limit = limit * 1.5  # number almost perfect for normal weeks where only weekends are off
+
+                # Add 3 days to the start date to make sure we get enough data on extra long weekends (like Thanksgiving)
+                loop_limit += 3
 
         df = []  # to use len(df) below without an error
 
